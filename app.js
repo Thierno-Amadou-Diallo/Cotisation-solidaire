@@ -13,6 +13,7 @@ var REGISTER_PRENOMS = [
   'Abdoul Karim',
   'Abdoulaye Souleymane',
   'Elhadj Oumar',
+  'Mamadou Cherif',
   'Djouldé'
 ];
 
