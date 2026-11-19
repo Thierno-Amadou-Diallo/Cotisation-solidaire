@@ -3,29 +3,30 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Cotisation solidaire</title>
+  <title>Cotisation Ramadan</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <div class="app">
-    <header>
-      <small>Les meilleurs</small>
-      <h1>Cotisation Ramadan</h1>
-      <p>Action du Ramadan pour aider des familles dans le besoin.</p>
-    </header>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <small>Les meilleurs</small>
+        <strong>Cotisation Ramadan</strong>
+      </div>
+      <nav id="nav" aria-label="Navigation"></nav>
+    </aside>
 
-    <main id="main"></main>
-
-    <nav id="nav"></nav>
+    <div class="content">
+      <header class="topbar">
+        <h1 id="pageTitle"></h1>
+        <p id="pageSub"></p>
+      </header>
+      <main id="main"></main>
+    </div>
   </div>
 
-  <!-- Supabase -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-
-  <!-- Configuration -->
   <script src="config.js"></script>
-
-  <!-- Application -->
   <script src="app.js"></script>
 </body>
 </html>
