@@ -3,32 +3,41 @@ var DEFAULT_AMOUNT = 700000;
 var DEADLINE = new Date(2027, 1, 15); // 15 février 2027
 var MAX_FILE = 5 * 1024 * 1024;       // 5 Mo
 
-// Liste des membres du groupe (pour les listes déroulantes « Mon prénom »)
-var MEMBERS = [
+// Noms et prénoms proposés uniquement à l'inscription (dédoublonnés)
+var REGISTER_NOMS = ['Diallo', 'Baldé', 'Sow', 'Bah'];
+var REGISTER_PRENOMS = [
   'Thierno Amadou',
-  'Abdoulaye Souleymane',
+  'Aboubacar Yassar',
   'Thierno Hamidou',
-  'Karim',
-  'Fadja',
-  'Djouldé',
-  'Yassar',
-  'Oumar',
-  'Chérif'
+  'Mamadou Fadja',
+  'Abdoul Karim',
+  'Abdoulaye Souleymane',
+  'Elhadj Oumar',
+  'Djouldé'
 ];
 
-// Une couleur par personne (dans l'ordre de la liste ci-dessus)
+// Liste des inscrits (remplie uniquement depuis la table Supabase "membres")
+var MEMBERS = [];
+
+// 16 couleurs bien contrastées et distinctes (aucun doublon)
 var PALETTE = [
-  { fg: '#1D4ED8', bg: '#E8EEFF' }, // Thierno Amadou : bleu
-  { fg: '#047857', bg: '#E1F4EC' }, // Abdoulaye Souleymane : vert
-  { fg: '#7E22CE', bg: '#F3E8FF' }, // Thierno Hamidou : violet
-  { fg: '#C2410C', bg: '#FFEDDD' }, // Karim : orange
-  { fg: '#BE185D', bg: '#FFE6F0' }, // Fadja : rose
-  { fg: '#0F766E', bg: '#DDF5F2' }, // Djouldé : turquoise
-  { fg: '#0369A1', bg: '#E0F2FE' }, // Yassar : bleu ciel
-  { fg: '#B91C1C', bg: '#FEE4E4' }, // Oumar : rouge
-  { fg: '#3F6212', bg: '#EDF6D8' }  // Chérif : olive
+  { fg: '#1D4ED8', bg: '#E8EEFF' }, // 1. Bleu roi
+  { fg: '#047857', bg: '#E1F4EC' }, // 2. Vert émeraude
+  { fg: '#7E22CE', bg: '#F3E8FF' }, // 3. Violet
+  { fg: '#C2410C', bg: '#FFEDDD' }, // 4. Orange brûlé
+  { fg: '#BE185D', bg: '#FFE6F0' }, // 5. Framboise
+  { fg: '#0369A1', bg: '#E0F2FE' }, // 6. Bleu océan
+  { fg: '#B91C1C', bg: '#FEE4E4' }, // 7. Rouge carmin
+  { fg: '#4D7C0F', bg: '#ECFCCB' }, // 8. Vert lime foncé
+  { fg: '#B45309', bg: '#FEF3C7' }, // 9. Ambre / Ocre
+  { fg: '#4338CA', bg: '#E0E7FF' }, // 10. Indigo
+  { fg: '#0E7490', bg: '#CFFAFE' }, // 11. Cyan profond
+  { fg: '#A21CAF', bg: '#FAE8FF' }, // 12. Magenta
+  { fg: '#374151', bg: '#F3F4F6' }, // 13. Gris anthracite
+  { fg: '#9A3412', bg: '#FFEDD5' }, // 14. Terracotta
+  { fg: '#1E3A8A', bg: '#DBEAFE' }, // 15. Bleu marine
+  { fg: '#065F46', bg: '#D1FAE5' }  // 16. Sapin
 ];
-
 /* ---------- Données (elles viennent de Supabase) ---------- */
 var sb = null; // client Supabase
 
@@ -40,10 +49,11 @@ var state = {
   remarks: []   // { author, text, date }
 };
 var ui = { flash: '', error: '', busy: false };
+var authMode = 'login'; // 'login' ou 'register'
+var authMsg = { error: '', ok: '' };
+var preselectedMember = '';
 
-/* ---------- Connexion (choix du prénom, gardé sur cet appareil) ---------- */
-// Rien n'est gardé : à chaque ouverture de la page, il faut se reconnecter.
-// (on efface aussi l'ancien prénom mémorisé par les versions précédentes)
+/* ---------- Connexion (uniquement les inscrits + mot de passe) ---------- */
 try { localStorage.removeItem('cotisation_user'); } catch (e) {}
 function saveUser() {}
 state.user = '';
@@ -67,13 +77,29 @@ function fileInfo(url) {
   return { kind: /\.pdf$/i.test(name) ? 'pdf' : 'image', fileName: name };
 }
 
+function extractMembers(dbRows) {
+  var seen = {};
+  var list = [];
+  (dbRows || []).forEach(function (m) {
+    var clean = ((m.prenom || '') + ' ' + (m.nom || '')).trim().replace(/\s+/g, ' ');
+    if (!clean) return;
+    var key = clean.toLowerCase();
+    if (!seen[key]) {
+      seen[key] = true;
+      list.push(clean);
+    }
+  });
+  return list;
+}
+
 // Recharge toutes les données depuis Supabase
 function refresh() {
   return Promise.all([
     sb.from('reglages').select('numero_orange_money').eq('id', 1).maybeSingle(),
     sb.from('paiements').select('prenom,montant,capture_url,created_at').order('created_at', { ascending: true }),
     sb.from('votes').select('prenom,montant').order('created_at', { ascending: true }),
-    sb.from('remarques').select('auteur,texte,created_at').order('created_at', { ascending: true })
+    sb.from('remarques').select('auteur,texte,created_at').order('created_at', { ascending: true }),
+    sb.from('membres').select('prenom,nom').order('created_at', { ascending: true })
   ]).then(function (r) {
     r.forEach(function (x) { check(x); });
     state.phone = (r[0].data && r[0].data.numero_orange_money) || '';
@@ -83,6 +109,7 @@ function refresh() {
     });
     state.votes = r[2].data.map(function (v) { return { name: v.prenom, amount: v.montant }; });
     state.remarks = r[3].data.map(function (x) { return { author: x.auteur, text: x.texte, date: new Date(x.created_at) }; });
+    MEMBERS = extractMembers(r[4].data);
   });
 }
 
@@ -135,7 +162,11 @@ var ICONS = {
   logout: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h3M16 8l4 4-4 4M20 12H9"/></svg>',
   chevron: '<svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>',
   check: '<svg class="tick" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>',
-  folder: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>'
+  folder: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>',
+  lock: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>',
+  eye: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>',
+  eyeOff: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-6.4 0-10-8-10-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c6.4 0 10 8 10 8a18.5 18.5 0 0 1-2.16 3.19M1 1l22 22"/></svg>'
+  ,ramadan: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12.5 3.5a8.5 8.5 0 1 0 8 11.3 7 7 0 0 1-8-11.3z"/><path d="M18.5 4.5v3M17 6h3"/></svg>'
 };
 
 /* ---------- Outils ---------- */
@@ -145,13 +176,14 @@ function esc(s) {
     return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
   });
 }
-function nameSelect(id) {
-  return '<select id="' + id + '" style="margin-top:6px">' +
-    '<option value="">Choisis ton prénom</option>' +
-    MEMBERS.map(function (m) { return '<option value="' + esc(m) + '">' + esc(m) + '</option>'; }).join('') +
-    '</select>';
+function hashPassword(pwd) {
+  var enc = new TextEncoder().encode(pwd);
+  return crypto.subtle.digest('SHA-256', enc).then(function (buf) {
+    return Array.from(new Uint8Array(buf)).map(function (b) {
+      return b.toString(16).padStart(2, '0');
+    }).join('');
+  });
 }
-// Ligne « au nom de » pour les formulaires (le prénom vient de la connexion)
 function asUser() {
   var c = colorOf(state.user);
   return '<div class="as-user"><span class="dot" style="background:' + c.fg + '">' + esc(initials(state.user)) + '</span>' +
@@ -162,10 +194,13 @@ function digits(s) { return String(s).replace(/\D/g, ''); }
 
 function colorOf(name) {
   var i = MEMBERS.indexOf(name);
-  return i >= 0 ? PALETTE[i % PALETTE.length] : { fg: '#475569', bg: '#EEF1F5' };
+  if (i >= 0) return PALETTE[i % PALETTE.length];
+  var h = 0;
+  for (var k = 0; k < name.length; k++) h = (h * 31 + name.charCodeAt(k)) | 0;
+  return PALETTE[Math.abs(h) % PALETTE.length];
 }
 function initials(name) {
-  var parts = name.split(' ');
+  var parts = name.trim().split(/\s+/);
   return (parts.length > 1 ? parts[0].charAt(0) + parts[1].charAt(0) : name.slice(0, 2)).toUpperCase();
 }
 function when(d) {
@@ -197,7 +232,6 @@ function currentAmount() { var w = winner(); return w ? w.amount : DEFAULT_AMOUN
 function totalPaid() {
   return state.payers.reduce(function (sum, p) { return sum + (p.amount || 0); }, 0);
 }
-// Affiche un numéro par groupes : +224 806 66 55 53
 function formatPhone(s) {
   var d = digits(s);
   var group = function (n) { return n.slice(0, 3) + ' ' + n.slice(3, 5) + ' ' + n.slice(5, 7) + ' ' + n.slice(7); };
@@ -304,7 +338,6 @@ function viewPaiements() {
   var done = MEMBERS.filter(function (m) { return paid[m]; }).length;
   var pct = total ? Math.round(done / total * 100) : 0;
 
-  // Tous les membres, ceux qui ont payé d'abord
   var names = MEMBERS.slice().sort(function (x, y) { return (paid[y] ? 1 : 0) - (paid[x] ? 1 : 0); });
   var list = names.map(function (m) {
     var p = paid[m];
@@ -337,7 +370,7 @@ function viewPaiements() {
       asUser() +
       '<div><label class="muted" for="payAmount" style="font-size:13px">Montant envoyé (FG)</label>' +
       '<input id="payAmount" type="text" inputmode="numeric" placeholder="Ex. 700000" style="margin-top:6px"></div>' +
-            '<div><div class="muted" style="font-size:13px">Capture d’écran ou PDF du transfert</div>' +
+      '<div><div class="muted" style="font-size:13px">Capture d’écran ou PDF du transfert</div>' +
       '<input id="payFile" class="file-input" type="file" accept="image/*,application/pdf,.pdf">' +
       '<label for="payFile" class="file-btn">' + ICONS.folder + '<span id="fileBtnText">Importer un fichier</span></label>' +
       '<div class="muted" id="fileLabel" style="font-size:13px;margin-top:8px">Aucun fichier joint (image ou PDF, 5 Mo maximum).</div></div>' +
@@ -354,7 +387,6 @@ function viewVote() {
   var w = winner();
   var list = options();
 
-  // Montant en tête (seulement s'il n'y a pas d'égalité)
   var leadAmount = null;
   if (total > 0) {
     var max = Math.max.apply(null, list.map(function (o) { return o.names.length; }));
@@ -391,7 +423,7 @@ function viewVote() {
     '</div>' +
 
     '<div><div class="eyebrow">Vote</div><h2 style="margin:4px 0 6px">Quelle cotisation par personne pour 2027 ?</h2>' +
-    '<p class="muted" style="margin:0">Indique ton prénom et le montant que tu proposes (tape-le, ou touche un montant déjà proposé), puis vote. Un seul vote par prénom : si tu revotes, ton choix est remplacé.</p></div>' +
+    '<p class="muted" style="margin:0">Indique le montant que tu proposes (tape-le, ou touche un montant déjà proposé), puis vote. Un seul vote par personne : si tu revotes, ton choix est remplacé.</p></div>' +
     (opts
       ? '<div style="display:flex;flex-direction:column;gap:10px">' + opts + '</div>'
       : '<div class="empty">Aucun vote pour l’instant. Le premier vote créera le premier montant.</div>') +
@@ -431,7 +463,7 @@ function viewRemarques() {
 }
 
 /* ---------- Affichage (en gardant ce que la personne est en train de saisir) ---------- */
-var FORM_IDS = ['tel', 'payName', 'payAmount', 'voter', 'custom', 'remarkAuthor', 'remark'];
+var FORM_IDS = ['tel', 'payAmount', 'custom', 'remark'];
 function snapshot() {
   var s = { values: {}, file: $('payFile'), focus: null };
   FORM_IDS.forEach(function (id) { if ($(id)) s.values[id] = $(id).value; });
@@ -478,7 +510,6 @@ function render(keep) {
 }
 
 /* ---------- Interactions ---------- */
-// Met à jour le bouton « Voter » et la surbrillance du montant choisi
 function syncVote() {
   var amt = parseInt(digits($('custom').value), 10) || 0;
   var who = state.user;
@@ -499,7 +530,6 @@ function bind() {
   var go = document.querySelector('[data-go]');
   if (go) go.onclick = function () { setTab('vote'); };
 
-  // Copier le numéro (si la copie est refusée, on sélectionne le numéro)
   if ($('copyBtn')) {
     $('copyBtn').onclick = function () {
       var txt = state.phone.replace(/\s/g, '');
@@ -518,7 +548,6 @@ function bind() {
     };
   }
 
-  // Numéro Orange Money
   if ($('tel')) {
     var checkPhone = function () { $('phoneBtn').disabled = digits($('tel').value).length < 8; };
     $('tel').oninput = checkPhone;
@@ -532,7 +561,6 @@ function bind() {
     };
   }
 
-  // Paiements (image ou PDF)
   if ($('payAmount')) {
     var checkPay = function () {
       var amt = parseInt(digits($('payAmount').value), 10) || 0;
@@ -573,9 +601,7 @@ function bind() {
     };
   }
 
-  // Vote
   if ($('custom')) {
-    // Toucher un montant déjà proposé le recopie dans le champ
     var cards = document.querySelectorAll('[data-amount]');
     for (var i = 0; i < cards.length; i++) {
       cards[i].onclick = function () {
@@ -596,7 +622,6 @@ function bind() {
     };
   }
 
-  // Remarques
   if ($('remark')) {
     var checkRemark = function () {
       $('remarkBtn').disabled = !($('remark').value.trim() && state.user);
@@ -614,7 +639,111 @@ function bind() {
   }
 }
 
-/* ---------- Page de connexion + avatar dans le menu ---------- */
+/* ---------- Composant Liste Déroulante Moderne réutilisable ---------- */
+function setupDropdown(container, prefix, optionsList, placeholder, emptyMsg, initialVal, onChange) {
+  var value = initialVal || '';
+  var dd = $(prefix + 'Dd');
+  var btn = $(prefix + 'Btn');
+  var valEl = $(prefix + 'Value');
+  var listEl = $(prefix + 'List');
+
+  var itemsHtml = optionsList.length
+    ? optionsList.map(function (opt) {
+        var c = colorOf(opt);
+        return '<li class="dd-item" role="option" tabindex="-1" data-name="' + esc(opt) + '" aria-selected="false">' +
+          '<span class="dd-av" style="background:' + c.fg + '">' + esc(initials(opt)) + '</span>' +
+          '<span class="dd-name">' + esc(opt) + '</span>' + ICONS.check + '</li>';
+      }).join('')
+    : '<li class="dd-empty" role="presentation">' + emptyMsg + '</li>';
+
+  listEl.innerHTML = itemsHtml;
+  var items = Array.prototype.slice.call(listEl.querySelectorAll('.dd-item'));
+
+  var openList = function () {
+    // Fermer les autres listes déroulantes ouvertes
+    var allLists = container.querySelectorAll('.dd-list');
+    var allBtns = container.querySelectorAll('.dd-trigger');
+    for (var k = 0; k < allLists.length; k++) {
+      if (allLists[k] !== listEl) {
+        allLists[k].hidden = true;
+        allBtns[k].setAttribute('aria-expanded', 'false');
+      }
+    }
+    var r = btn.getBoundingClientRect();
+    var below = window.innerHeight - r.bottom - 16, above = r.top - 16;
+    var up = below < 240 && above > below;
+    listEl.className = 'dd-list' + (up ? ' up' : '');
+    listEl.style.maxHeight = Math.max(150, Math.min(280, up ? above : below)) + 'px';
+    listEl.hidden = false;
+    btn.setAttribute('aria-expanded', 'true');
+    if (items.length) {
+      var cur = items.filter(function (i) { return i.getAttribute('data-name') === value; })[0] || items[0];
+      cur.focus();
+    }
+  };
+
+  var closeList = function (back) {
+    listEl.hidden = true;
+    btn.setAttribute('aria-expanded', 'false');
+    if (back) btn.focus();
+  };
+
+  var applyPick = function (name, silent) {
+    value = name;
+    var c = colorOf(value);
+    valEl.className = 'dd-value';
+    valEl.innerHTML = '<span class="dd-av" style="background:' + c.fg + '">' + esc(initials(value)) + '</span>' + esc(value);
+    items.forEach(function (i) { i.setAttribute('aria-selected', i.getAttribute('data-name') === value ? 'true' : 'false'); });
+    if (!silent && onChange) onChange(value);
+  };
+
+  if (value && optionsList.indexOf(value) >= 0) {
+    applyPick(value, true);
+  } else {
+    value = '';
+    valEl.className = 'dd-value placeholder';
+    valEl.textContent = optionsList.length ? placeholder : 'Aucun inscrit pour l’instant';
+  }
+
+  btn.onclick = function () { if (listEl.hidden) openList(); else closeList(false); };
+  btn.onkeydown = function (e) {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); openList(); }
+  };
+
+  items.forEach(function (li, idx) {
+    li.onclick = function () {
+      applyPick(li.getAttribute('data-name'), false);
+      closeList(false);
+    };
+    li.onkeydown = function (e) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); (items[idx + 1] || items[0]).focus(); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); (items[idx - 1] || items[items.length - 1]).focus(); }
+      else if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); applyPick(li.getAttribute('data-name'), false); closeList(false); }
+      else if (e.key === 'Escape') { e.preventDefault(); closeList(true); }
+      else if (e.key === 'Tab') { closeList(false); }
+    };
+  });
+
+  container.addEventListener('click', function (e) {
+    if (dd && !dd.contains(e.target)) closeList(false);
+  });
+
+  return { getValue: function () { return value; } };
+}
+
+function dropdownHtml(prefix, labelText) {
+  return '<div class="auth-field">' +
+    '<label class="label" id="' + prefix + 'Label">' + esc(labelText) + '</label>' +
+    '<div class="dd" id="' + prefix + 'Dd">' +
+      '<button type="button" class="dd-trigger" id="' + prefix + 'Btn" aria-haspopup="listbox" aria-expanded="false" aria-labelledby="' + prefix + 'Label ' + prefix + 'Value">' +
+        '<span class="dd-value placeholder" id="' + prefix + 'Value"></span>' + ICONS.chevron +
+      '</button>' +
+      '<ul class="dd-list" id="' + prefix + 'List" role="listbox" aria-labelledby="' + prefix + 'Label" hidden></ul>' +
+    '</div>' +
+  '</div>';
+}
+
+/* ---------- Page de connexion (uniquement les inscrits) & inscription ---------- */
 function applyUser() {
   var side = document.querySelector('.sidebar');
   var box = $('userBox');
@@ -630,88 +759,183 @@ function applyUser() {
       '<button class="logout" id="logoutBtn" type="button" title="Se déconnecter">' + ICONS.logout + '<span>Se déconnecter</span></button>';
     $('logoutBtn').onclick = function () {
       state.user = ''; saveUser(''); state.tab = 'infos'; ui.flash = ''; ui.error = '';
+      authMode = 'login'; authMsg = { error: '', ok: '' };
       render();
     };
     return;
   }
 
   if (box) box.parentNode.removeChild(box);
-  if (login) return;
-  login = document.createElement('div');
-  login.id = 'login';
-  login.className = 'login';
+  if (!login) {
+    login = document.createElement('div');
+    login.id = 'login';
+    login.className = 'login';
+    document.body.appendChild(login);
+  }
+
+  var isRegister = authMode === 'register';
+  var banner = authMsg.error
+    ? '<div class="error">' + esc(authMsg.error) + '</div>'
+    : (authMsg.ok ? '<div class="ok">' + esc(authMsg.ok) + '</div>' : '');
+
+  var pwdBlock =
+    '<div class="auth-field">' +
+      '<label class="label" for="authPass">Mot de passe</label>' +
+      '<div class="input-box">' +
+        '<span class="input-ico">' + ICONS.lock + '</span>' +
+        '<input id="authPass" type="password" placeholder="' + (isRegister ? 'Choisis un mot de passe (4 car. min.)' : 'Entre ton mot de passe') + '" autocomplete="' + (isRegister ? 'new-password' : 'current-password') + '">' +
+        '<button type="button" class="pwd-toggle" id="togglePwd" aria-label="Afficher le mot de passe">' + ICONS.eye + '</button>' +
+      '</div>' +
+    '</div>';
+
+  var formBody = isRegister
+    ? '<div class="auth-stack">' +
+        dropdownHtml('regNom', 'Mon nom') +
+        dropdownHtml('regPrenom', 'Mon prénom') +
+        pwdBlock +
+      '</div>'
+    : '<div class="auth-stack">' +
+        dropdownHtml('loginMember', 'Mon nom et prénom') +
+        pwdBlock +
+      '</div>';
+
   login.innerHTML =
     '<div class="login-card">' +
-      '<div class="login-logo">' + ICONS.paiements + '</div>' +
+'<div class="login-logo">' + ICONS.ramadan + '</div>' +
       '<div class="eyebrow">Les meilleurs</div>' +
-      '<h2>Cotisation Ramadan</h2>' +
-      '<p class="muted">Choisis ton prénom pour te connecter. Tes paiements, votes et remarques seront faits en ton nom.</p>' +
-      '<label class="label" id="ddLabel">Mon prénom</label>' +
-      '<div class="dd" id="dd">' +
-        '<button type="button" class="dd-trigger" id="ddBtn" aria-haspopup="listbox" aria-expanded="false" aria-labelledby="ddLabel ddValue">' +
-          '<span class="dd-value placeholder" id="ddValue">Choisis ton prénom</span>' + ICONS.chevron +
-        '</button>' +
-        '<ul class="dd-list" id="ddList" role="listbox" aria-labelledby="ddLabel" hidden>' +
-          MEMBERS.map(function (m) {
-            var c = colorOf(m);
-            return '<li class="dd-item" role="option" tabindex="-1" data-name="' + esc(m) + '" aria-selected="false">' +
-              '<span class="dd-av" style="background:' + c.fg + '">' + esc(initials(m)) + '</span>' +
-              '<span class="dd-name">' + esc(m) + '</span>' + ICONS.check + '</li>';
-          }).join('') +
-        '</ul>' +
+      '<h2>' + (isRegister ? 'Créer un compte' : 'Cotisation Ramadan') + '</h2>' +
+      '<p class="muted">' + (isRegister
+        ? 'Choisis ton nom, ton prénom et définis ton mot de passe.'
+        : 'Sélectionne ton compte inscrit puis saisis ton mot de passe.') + '</p>' +
+      banner +
+      formBody +
+      '<button class="btn full" id="authSubmit" disabled>' + (isRegister ? 'Créer mon compte' : 'Se connecter') + '</button>' +
+      '<div class="auth-switch">' +
+        (isRegister
+          ? 'Déjà inscrit ? <button type="button" class="link-btn" id="switchAuth">Se connecter</button>'
+          : 'Pas encore de compte ? <button type="button" class="link-btn" id="switchAuth">Créer un compte</button>') +
       '</div>' +
-      '<button class="btn full" id="loginBtn" disabled>Se connecter</button>' +
     '</div>';
-  document.body.appendChild(login);
 
-  // Liste déroulante personnalisée
-  var choice = '';
-  var items = Array.prototype.slice.call(login.querySelectorAll('.dd-item'));
-  var openList = function () {
-    // Ouvre vers le haut s'il n'y a pas assez de place en bas
-    var r = $('ddBtn').getBoundingClientRect();
-    var below = window.innerHeight - r.bottom - 16, above = r.top - 16;
-    var up = below < 260 && above > below;
-    $('ddList').className = 'dd-list' + (up ? ' up' : '');
-    $('ddList').style.maxHeight = Math.max(160, Math.min(300, up ? above : below)) + 'px';
-    $('ddList').hidden = false; $('ddBtn').setAttribute('aria-expanded', 'true');
-    var cur = items.filter(function (i) { return i.getAttribute('data-name') === choice; })[0] || items[0];
-    cur.focus();
-  };
-  var closeList = function (back) {
-    $('ddList').hidden = true; $('ddBtn').setAttribute('aria-expanded', 'false');
-    if (back) $('ddBtn').focus();
-  };
-  var pick = function (li) {
-    choice = li.getAttribute('data-name');
-    var c = colorOf(choice);
-    $('ddValue').className = 'dd-value';
-    $('ddValue').innerHTML = '<span class="dd-av" style="background:' + c.fg + '">' + esc(initials(choice)) + '</span>' + esc(choice);
-    items.forEach(function (i) { i.setAttribute('aria-selected', i === li ? 'true' : 'false'); });
-    $('loginBtn').disabled = false;
-    closeList(true);
-  };
-  $('ddBtn').onclick = function () { if ($('ddList').hidden) openList(); else closeList(false); };
-  $('ddBtn').onkeydown = function (e) {
-    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); openList(); }
-  };
-  items.forEach(function (li, idx) {
-    li.onclick = function () { pick(li); };
-    li.onkeydown = function (e) {
-      if (e.key === 'ArrowDown') { e.preventDefault(); (items[idx + 1] || items[0]).focus(); }
-      else if (e.key === 'ArrowUp') { e.preventDefault(); (items[idx - 1] || items[items.length - 1]).focus(); }
-      else if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(li); }
-      else if (e.key === 'Escape') { e.preventDefault(); closeList(true); }
-      else if (e.key === 'Tab') { closeList(false); }
-    };
-  });
-  login.addEventListener('click', function (e) { var dd = $('dd'); if (dd && !dd.contains(e.target)) closeList(false); });
+  var passEl = $('authPass');
+  var submitBtn = $('authSubmit');
+  var toggleBtn = $('togglePwd');
 
-  $('loginBtn').onclick = function () {
-    var v = choice;
-    if (!v) return;
-    state.user = v; saveUser(v); ui.flash = ''; ui.error = '';
-    render(); window.scrollTo(0, 0);
+  toggleBtn.onclick = function () {
+    var hidden = passEl.type === 'password';
+    passEl.type = hidden ? 'text' : 'password';
+    toggleBtn.innerHTML = hidden ? ICONS.eyeOff : ICONS.eye;
+    toggleBtn.setAttribute('aria-label', hidden ? 'Masquer le mot de passe' : 'Afficher le mot de passe');
+  };
+
+  var nomDd = null, prenomDd = null, memberDd = null;
+
+  var validate = function () {
+    if (isRegister) {
+      submitBtn.disabled = !(nomDd && nomDd.getValue() && prenomDd && prenomDd.getValue() && passEl.value.length >= 4);
+    } else {
+      submitBtn.disabled = !(memberDd && memberDd.getValue() && passEl.value.length >= 4);
+    }
+  };
+
+  passEl.oninput = validate;
+  passEl.onkeydown = function (e) { if (e.key === 'Enter' && !submitBtn.disabled) submitBtn.click(); };
+
+  if (isRegister) {
+    nomDd = setupDropdown(login, 'regNom', REGISTER_NOMS, 'Choisis ton nom', '', '', function () {
+      validate();
+    });
+    prenomDd = setupDropdown(login, 'regPrenom', REGISTER_PRENOMS, 'Choisis ton prénom', '', '', function () {
+      validate();
+      passEl.focus();
+    });
+  } else {
+    var initChoice = (preselectedMember && MEMBERS.indexOf(preselectedMember) >= 0) ? preselectedMember : '';
+    preselectedMember = '';
+    memberDd = setupDropdown(
+      login,
+      'loginMember',
+      MEMBERS,
+      'Choisis ton nom et prénom',
+      'Aucun compte inscrit pour l’instant.<br>Clique sur <b>Créer un compte</b> ci-dessous.',
+      initChoice,
+      function () {
+        validate();
+        passEl.focus();
+      }
+    );
+  }
+  validate();
+
+  $('switchAuth').onclick = function () {
+    authMode = isRegister ? 'login' : 'register';
+    authMsg = { error: '', ok: '' };
+    applyUser();
+  };
+
+  submitBtn.onclick = function () {
+    var pass = passEl.value;
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Vérification…';
+    authMsg = { error: '', ok: '' };
+
+    hashPassword(pass).then(function (hash) {
+      if (isRegister) {
+        var nom = nomDd.getValue();
+        var prenom = prenomDd.getValue();
+        var fullLabel = (prenom + ' ' + nom).trim();
+
+        return sb.from('membres').select('id').ilike('prenom', prenom).ilike('nom', nom).maybeSingle()
+          .then(check)
+          .then(function (res) {
+            if (res.data) throw new Error('Ce compte existe déjà. Passe directement à la connexion.');
+            return sb.from('membres').insert({
+              prenom: prenom,
+              nom: nom,
+              password_hash: hash
+            }).then(check);
+          })
+          .then(function () {
+            return refresh();
+          })
+          .then(function () {
+            preselectedMember = fullLabel;
+            authMode = 'login';
+            authMsg = { error: '', ok: 'Compte créé ! Saisis maintenant ton mot de passe pour te connecter.' };
+            applyUser();
+            if ($('authPass')) $('authPass').focus();
+          });
+      } else {
+        var selected = memberDd.getValue();
+        return sb.from('membres').select('prenom,nom,password_hash').then(check).then(function (res) {
+          var rows = res.data || [];
+          var match = null;
+          for (var i = 0; i < rows.length; i++) {
+            var comb = ((rows[i].prenom || '') + ' ' + (rows[i].nom || '')).trim().toLowerCase();
+            if (comb === selected.toLowerCase()) {
+              match = rows[i];
+              break;
+            }
+          }
+          if (!match) {
+            throw new Error('Aucun compte trouvé pour ' + selected + '. Crée ton compte d’abord.');
+          }
+          if (match.password_hash !== hash) {
+            throw new Error('Mot de passe incorrect.');
+          }
+          state.user = ((match.prenom || '') + ' ' + (match.nom || '')).trim() || selected;
+          saveUser(state.user);
+          ui.flash = ''; ui.error = '';
+          return refresh().then(function () {
+            render();
+            window.scrollTo(0, 0);
+          });
+        });
+      }
+    }).catch(function (e) {
+      authMsg.error = (e && e.message) ? e.message : 'Une erreur est survenue.';
+      applyUser();
+    });
   };
 }
 
@@ -727,7 +951,7 @@ if (configured() && window.supabase) {
   sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
   $('main').innerHTML = '<div class="muted">Chargement…</div>';
   renderNav();
-  applyUser(); // la page de connexion s'affiche tout de suite, sans attendre les données
+  applyUser();
   refresh()
     .then(function () { render(); listen(); })
     .catch(function (e) {
